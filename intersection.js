@@ -102,7 +102,50 @@ export class Intersection {
 
     // Get trajectory for a route
     getTrajectory(from, to) {
-        return this.trajectories[`${from}_${to}`];
+        const key = `${from}_${to}`;
+        if (this.trajectories[key]) {
+            return this.trajectories[key];
+        }
+        
+        // If trajectory doesn't exist, create a simple one
+        const entry = this.getPathEntryPoint(from);
+        const exit = this.exitPoints[to];
+        
+        if (!entry || !exit) return null;
+        
+        // For turns, create a curved path
+        const turnType = this.getTurnType(from, to);
+        if (turnType === 'straight') {
+            return [entry, exit];
+        } else {
+            // Create a simple curved path for turns
+            const midX = (entry.x + exit.x) / 2;
+            const midY = (entry.y + exit.y) / 2;
+            
+            // Offset the middle point to create a curve
+            let curveOffset = 30;
+            if (turnType === 'left') curveOffset = -30;
+            
+            const mid = {
+                x: midX + curveOffset,
+                y: midY + curveOffset
+            };
+            
+            return [entry, mid, exit];
+        }
+    }
+    
+    getTurnType(from, to) {
+        const dirs = ['north', 'east', 'south', 'west'];
+        const fromIdx = dirs.indexOf(from);
+        const toIdx = dirs.indexOf(to);
+        
+        if (fromIdx === -1 || toIdx === -1) return 'straight';
+        
+        const diff = (toIdx - fromIdx + 4) % 4;
+        if (diff === 1) return 'right';
+        if (diff === 3) return 'left';
+        return 'straight';
     }
 
     initialize() {

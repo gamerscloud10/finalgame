@@ -6,8 +6,17 @@ export class Car {
         this.id = id;
         this.fromDirection = direction;
         this.intersection = intersection;
-        // Route: {from: 'north', to: 'west'}
-        this.route = route || { from: direction, to: intersection.getToDirection(direction, 'straight') };
+        
+        // If no route provided, default to straight
+        if (!route) {
+            const dirs = ['north', 'east', 'south', 'west'];
+            const fromIdx = dirs.indexOf(direction);
+            const toDirection = dirs[(fromIdx + 2) % 4]; // straight through
+            this.route = { from: direction, to: toDirection };
+        } else {
+            this.route = route;
+        }
+        
         this.lane = lane; // 0 = left, 1 = right
         this.lateralPosition = 0;
         this.turnType = turnType || this.calculateTurnType();
@@ -44,13 +53,16 @@ export class Car {
     }
 
     calculateTurnType() {
-        // Determine turn type from route
-        if (!this.route) return 'straight';
+        if (!this.route || !this.route.from || !this.route.to) return 'straight';
+        
         const from = this.route.from;
         const to = this.route.to;
         const dirs = ['north', 'east', 'south', 'west'];
         const fromIdx = dirs.indexOf(from);
         const toIdx = dirs.indexOf(to);
+        
+        if (fromIdx === -1 || toIdx === -1) return 'straight';
+        
         const diff = (toIdx - fromIdx + 4) % 4;
         if (diff === 1) return 'right';
         if (diff === 3) return 'left';
@@ -180,8 +192,8 @@ calculateTargetPosition() {
                 break;
         }
 
-        // Update position based on speed and direction (keep cars in straight lines)
-        if (this.speed > 0) {
+        // Only update position for straight movement when not crossing or following a path
+        if (this.speed > 0 && this.state !== 'crossing') {
             // Move based on the angle the car is facing
             this.x += Math.cos(this.angle) * this.speed * dt;
             this.y += Math.sin(this.angle) * this.speed * dt;
@@ -485,10 +497,33 @@ export class CarManager {
         });
 
         if (!tooClose) {
+            // Randomly choose a turn type
+            const turnTypes = ['straight', 'left', 'right'];
+            const turnType = turnTypes[Math.floor(Math.random() * turnTypes.length)];
+            
+            // Calculate destination direction based on turn type
+            const dirs = ['north', 'east', 'south', 'west'];
+            const fromIdx = dirs.indexOf(direction);
+            let toDirection;
+            
+            switch (turnType) {
+                case 'straight':
+                    toDirection = dirs[(fromIdx + 2) % 4];
+                    break;
+                case 'right':
+                    toDirection = dirs[(fromIdx + 1) % 4];
+                    break;
+                case 'left':
+                    toDirection = dirs[(fromIdx + 3) % 4];
+                    break;
+            }
+            
             const car = new Car({
                 id: this.nextCarId++,
                 direction: direction,
                 intersection: this.intersection,
+                route: { from: direction, to: toDirection },
+                turnType: turnType
             });
             this.cars.push(car);
         }

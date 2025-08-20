@@ -47,7 +47,7 @@ export class Car {
 
         // Assign trajectory if not straight
         if (this.turnType !== 'straight') {
-            this.path = intersection.generateTurnTrajectory(this.fromDirection, this.toDirection, this.lane);
+            this.path = intersection.getTrajectory(this.fromDirection, this.toDirection);
             this.pathProgress = 0;
         }
     }
@@ -497,9 +497,16 @@ export class CarManager {
         });
 
         if (!tooClose) {
-            // Randomly choose a turn type
-            const turnTypes = ['straight', 'left', 'right'];
-            const turnType = turnTypes[Math.floor(Math.random() * turnTypes.length)];
+            // Randomly choose a turn type with weighted probabilities
+            const rand = Math.random();
+            let turnType;
+            if (rand < 0.5) {
+                turnType = 'straight'; // 50% straight
+            } else if (rand < 0.75) {
+                turnType = 'right'; // 25% right
+            } else {
+                turnType = 'left'; // 25% left
+            }
             
             // Calculate destination direction based on turn type
             const dirs = ['north', 'east', 'south', 'west'];
@@ -518,12 +525,16 @@ export class CarManager {
                     break;
             }
             
+            // Randomly assign lane (0 = left lane, 1 = right lane)
+            const lane = Math.floor(Math.random() * 2);
+            
             const car = new Car({
                 id: this.nextCarId++,
                 direction: direction,
                 intersection: this.intersection,
                 route: { from: direction, to: toDirection },
-                turnType: turnType
+                turnType: turnType,
+                lane: lane
             });
             this.cars.push(car);
         }

@@ -1,4 +1,6 @@
 import { CONFIG } from "./config.js";
+import { utils } from './utils.js';
+
 export class Intersection {
     getPathEntryPoint(direction) {
         // Entry point for Bezier curve (lane center at intersection edge)
@@ -102,50 +104,69 @@ export class Intersection {
 
     // Get trajectory for a route
     getTrajectory(from, to) {
-        const key = `${from}_${to}`;
-        if (this.trajectories[key]) {
-            return this.trajectories[key];
-        }
-        
-        // If trajectory doesn't exist, create a simple one
-        const entry = this.getPathEntryPoint(from);
-        const exit = this.exitPoints[to];
-        
-        if (!entry || !exit) return null;
-        
-        // For turns, create a curved path
-        const turnType = this.getTurnType(from, to);
-        if (turnType === 'straight') {
-            return [entry, exit];
-        } else {
-            // Create a simple curved path for turns
-            const midX = (entry.x + exit.x) / 2;
-            const midY = (entry.y + exit.y) / 2;
-            
-            // Offset the middle point to create a curve
-            let curveOffset = 30;
-            if (turnType === 'left') curveOffset = -30;
-            
-            const mid = {
-                x: midX + curveOffset,
-                y: midY + curveOffset
-            };
-            
-            return [entry, mid, exit];
-        }
+        // Use the new trajectory generation system
+        return this.generateTurnTrajectory(from, to, 0);
     }
     
     getTurnType(from, to) {
-        const dirs = ['north', 'east', 'south', 'west'];
-        const fromIdx = dirs.indexOf(from);
-        const toIdx = dirs.indexOf(to);
+        return utils.getTurnDirection(from, to);
+    }
+
+    // Generate proper curved trajectory for turns
+    generateTurnTrajectory(from, to, lane = 0) {
+        const turnType = this.getTurnType(from, to);
         
-        if (fromIdx === -1 || toIdx === -1) return 'straight';
+        if (turnType === 'straight') {
+            // Straight path through intersection
+            const entry = this.getPathEntryPoint(from);
+            const exit = this.exitPoints[to];
+            return [entry, exit];
+        }
         
-        const diff = (toIdx - fromIdx + 4) % 4;
-        if (diff === 1) return 'right';
-        if (diff === 3) return 'left';
-        return 'straight';
+        // Calculate radius based on lane (inner lanes have smaller radius)
+        const baseRadius = this.roadWidth / 2; // 30px
+        const laneOffset = lane * this.laneWidth / 4; // Adjust for lane
+        const radius = baseRadius + laneOffset;
+        
+        // Calculate turn center based on turn direction
+        const center = this.getTurnCenter(from, to, turnType);
+        
+        // Generate arc path
+        return utils.generateTurnPath({
+            from: from,
+            to: to,
+            lane: lane,
+            center: center,
+            radius: radius,
+            steps: 25
+        });
+    }
+
+    // Get the center point for the turn arc
+    getTurnCenter(from, to, turnType) {
+        const halfRoad = this.roadWidth / 2;
+        
+        // Calculate turn center based on intersection geometry
+        if (from === 'north' && to === 'east') { // Right turn
+            return { x: this.centerX + halfRoad, y: this.centerY - halfRoad };
+        } else if (from === 'north' && to === 'west') { // Left turn
+            return { x: this.centerX - halfRoad, y: this.centerY - halfRoad };
+        } else if (from === 'east' && to === 'south') { // Right turn
+            return { x: this.centerX + halfRoad, y: this.centerY + halfRoad };
+        } else if (from === 'east' && to === 'north') { // Left turn
+            return { x: this.centerX + halfRoad, y: this.centerY - halfRoad };
+        } else if (from === 'south' && to === 'west') { // Right turn
+            return { x: this.centerX - halfRoad, y: this.centerY + halfRoad };
+        } else if (from === 'south' && to === 'east') { // Left turn
+            return { x: this.centerX + halfRoad, y: this.centerY + halfRoad };
+        } else if (from === 'west' && to === 'north') { // Right turn
+            return { x: this.centerX - halfRoad, y: this.centerY - halfRoad };
+        } else if (from === 'west' && to === 'south') { // Left turn
+            return { x: this.centerX - halfRoad, y: this.centerY + halfRoad };
+        }
+        
+        // Default to intersection center
+        return { x: this.centerX, y: this.centerY };
     }
 
     initialize() {

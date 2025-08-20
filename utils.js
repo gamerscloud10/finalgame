@@ -90,5 +90,77 @@ export const utils = {
             x: ax * tCubed + bx * tSquared + cx * t + p0.x,
             y: ay * tCubed + by * tSquared + cy * t + p0.y
         };
+    },
+
+    // Generate arc path for turns
+    generateTurnPath(config) {
+        const { from, to, lane, center, radius, steps = 30 } = config;
+        const path = [];
+        
+        // Calculate start and end angles based on directions
+        const startAngle = this.getDirectionAngle(from);
+        const endAngle = this.getDirectionAngle(to);
+        
+        // Determine if it's a left or right turn
+        const turnDirection = this.getTurnDirection(from, to);
+        
+        if (turnDirection === 'straight') {
+            // For straight paths, just return start and end points
+            const startPoint = this.getDirectionPoint(from, center, radius);
+            const endPoint = this.getDirectionPoint(to, center, radius);
+            return [startPoint, endPoint];
+        }
+        
+        // Calculate the actual arc
+        let angleStep;
+        if (turnDirection === 'right') {
+            angleStep = (Math.PI / 2) / steps; // 90 degrees clockwise
+        } else { // left turn
+            angleStep = -(Math.PI / 2) / steps; // 90 degrees counter-clockwise
+        }
+        
+        // Generate arc points
+        for (let i = 0; i <= steps; i++) {
+            const currentAngle = startAngle + (angleStep * i);
+            const x = center.x + radius * Math.cos(currentAngle);
+            const y = center.y + radius * Math.sin(currentAngle);
+            path.push({ x, y });
+        }
+        
+        return path;
+    },
+
+    // Get angle for direction (0 = east, PI/2 = south, PI = west, 3PI/2 = north)
+    getDirectionAngle(direction) {
+        switch (direction) {
+            case 'north': return -Math.PI / 2;
+            case 'east': return 0;
+            case 'south': return Math.PI / 2;
+            case 'west': return Math.PI;
+            default: return 0;
+        }
+    },
+
+    // Get point on intersection edge for direction
+    getDirectionPoint(direction, center, radius) {
+        const angle = this.getDirectionAngle(direction);
+        return {
+            x: center.x + radius * Math.cos(angle),
+            y: center.y + radius * Math.sin(angle)
+        };
+    },
+
+    // Determine turn direction
+    getTurnDirection(from, to) {
+        const dirs = ['north', 'east', 'south', 'west'];
+        const fromIdx = dirs.indexOf(from);
+        const toIdx = dirs.indexOf(to);
+        
+        if (fromIdx === -1 || toIdx === -1) return 'straight';
+        
+        const diff = (toIdx - fromIdx + 4) % 4;
+        if (diff === 1) return 'right';
+        if (diff === 3) return 'left';
+        return 'straight';
     }
 };

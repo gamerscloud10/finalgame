@@ -47,7 +47,7 @@ export class Car {
 
         // Assign trajectory if not straight
         if (this.turnType !== 'straight') {
-            this.path = intersection.getTrajectory(this.fromDirection, this.toDirection);
+            this.path = intersection.generateTurnTrajectory(this.fromDirection, this.toDirection, this.lane);
             this.pathProgress = 0;
         }
     }

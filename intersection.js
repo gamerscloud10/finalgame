@@ -1,452 +1,558 @@
 import { CONFIG } from "./config.js";
 import { utils } from './utils.js';
 
-export class Intersection {
-    getPathEntryPoint(direction) {
-        // Entry point for Bezier curve (lane center at intersection edge)
-        const halfRoad = this.roadWidth / 2;
-        const laneOffset = this.laneWidth / 2;
-        switch (direction) {
-            case CONFIG.DIRECTIONS.NORTH:
-                return { x: this.centerX - laneOffset, y: this.centerY - halfRoad };
-            case CONFIG.DIRECTIONS.EAST:
-                return { x: this.centerX + halfRoad, y: this.centerY - laneOffset };
-            case CONFIG.DIRECTIONS.SOUTH:
-                return { x: this.centerX + laneOffset, y: this.centerY + halfRoad };
-            case CONFIG.DIRECTIONS.WEST:
-                return { x: this.centerX - halfRoad, y: this.centerY + laneOffset };
-            default:
-                return { x: this.centerX, y: this.centerY };
-        }
-    }
-    constructor(centerX, centerY) {
-        this.centerX = 600;
-        this.centerY = 600;
-        this.size = 120; // px
-        this.roadWidth = 60; // px
-        this.laneWidth = 30; // px
-        this.calculatePositions();
-
-        // Lane centerlines for each approach (2 lanes per road)
-        this.laneCenters = {
-            north: [this.centerX - this.laneWidth / 2, this.centerX + this.laneWidth / 2],
-            south: [this.centerX + this.laneWidth / 2, this.centerX - this.laneWidth / 2],
-            east:  [this.centerY - this.laneWidth / 2, this.centerY + this.laneWidth / 2],
-            west:  [this.centerY + this.laneWidth / 2, this.centerY - this.laneWidth / 2]
-        };
-
-        // Precompute all 12 trajectories (from each direction, left/straight/right)
-        this.trajectories = {};
-        const dirs = ['north', 'east', 'south', 'west'];
-        for (const from of dirs) {
-            for (const turn of ['left', 'straight', 'right']) {
-                const to = this.getToDirection(from, turn);
-                this.trajectories[`${from}_${to}`] = this.computeTrajectory(from, to, turn);
-            }
-        }
-    }
-    // Helper to get destination direction for a turn
-    getToDirection(from, turn) {
-        const dirs = ['north', 'east', 'south', 'west'];
-        const idx = dirs.indexOf(from);
-        if (turn === 'straight') return dirs[(idx + 2) % 4];
-        if (turn === 'right') return dirs[(idx + 1) % 4];
-        if (turn === 'left') return dirs[(idx + 3) % 4];
-        return from;
-    }
-
-    // Compute trajectory for a given movement
-    computeTrajectory(from, to, turn) {
-        // Entry/exit points for each direction
-        const entry = this.getPathEntryPoint(from);
-        const exit = this.exitPoints[to];
-        if (turn === 'straight') {
-            // Straight: simple line
-            return [entry, exit];
-        }
-        // For left/right, use quarter-circle arc
-        const radius = this.roadWidth; // 60 px
-        let cx, cy, startAngle, endAngle;
-        if (from === 'south' && to === 'east' && turn === 'right') {
-            // Example: South→East right turn (quarter-circle)
-            cx = this.centerX + radius;
-            cy = this.centerY + radius;
-            startAngle = Math.PI;
-            endAngle = Math.PI * 1.5;
-        } else if (from === 'north' && to === 'west' && turn === 'left') {
-            // Example: North→West left turn (quarter-circle)
-            cx = this.centerX - radius;
-            cy = this.centerY - radius;
-            startAngle = 0;
-            endAngle = Math.PI * 0.5;
+export class Car {
+    constructor({ id, direction, intersection, route = null, lane = 0, turnType = null }) {
+        this.id = id;
+        this.fromDirection = direction;
+        this.intersection = intersection;
+        
+        // If no route provided, default to straight
+        if (!route) {
+            const dirs = ['north', 'east', 'south', 'west'];
+            const fromIdx = dirs.indexOf(direction);
+            const toDirection = dirs[(fromIdx + 2) % 4]; // straight through
+            this.route = { from: direction, to: toDirection };
         } else {
-            // Generalize for other turns
-            // Use entry/exit and intersection center to estimate arc
-            const midAngle = Math.atan2(exit.y - this.centerY, exit.x - this.centerX);
-            cx = this.centerX;
-            cy = this.centerY;
-            startAngle = Math.atan2(entry.y - cy, entry.x - cx);
-            endAngle = Math.atan2(exit.y - cy, exit.x - cx);
-        }
-        // Generate points along arc
-        const points = [];
-        const steps = 20;
-        for (let i = 0; i <= steps; i++) {
-            const t = i / steps;
-            const angle = startAngle + (endAngle - startAngle) * t;
-            points.push({
-                x: cx + radius * Math.cos(angle),
-                y: cy + radius * Math.sin(angle)
-            });
-        }
-        return points;
-    }
-
-    // Get trajectory for a route
-    getTrajectory(from, to) {
-        // Use the new trajectory generation system
-        return this.generateTurnTrajectory(from, to, 0);
-    }
-    
-    getTurnType(from, to) {
-        return utils.getTurnDirection(from, to);
-    }
-
-    // Generate proper curved trajectory for turns
-    generateTurnTrajectory(from, to, lane = 0) {
-        const turnType = this.getTurnType(from, to);
-        
-        if (turnType === 'straight') {
-            // Straight path through intersection
-            const entry = this.getPathEntryPoint(from);
-            const exit = this.exitPoints[to];
-            return [entry, exit];
+            this.route = route;
         }
         
-        // Calculate radius based on lane (inner lanes have smaller radius)
-        const baseRadius = this.roadWidth / 2; // 30px
-        const laneOffset = lane * this.laneWidth / 4; // Adjust for lane
-        const radius = baseRadius + laneOffset;
-        
-        // Calculate turn center based on turn direction
-        const center = this.getTurnCenter(from, to, turnType);
-        
-        // Generate arc path
-        return utils.generateTurnPath({
-            from: from,
-            to: to,
-            lane: lane,
-            center: center,
-            radius: radius,
-            steps: 25
-        });
-    }
+        this.lane = lane; // 0 = left, 1 = right
+        this.lateralPosition = 0;
+        this.turnType = turnType || this.calculateTurnType();
+        this.toDirection = this.route.to;
 
-    // Get the center point for the turn arc
-    getTurnCenter(from, to, turnType) {
-        const halfRoad = this.roadWidth / 2;
-        
-        // Calculate turn center based on intersection geometry
-        if (from === 'north' && to === 'east') { // Right turn
-            return { x: this.centerX + halfRoad, y: this.centerY - halfRoad };
-        } else if (from === 'north' && to === 'west') { // Left turn
-            return { x: this.centerX - halfRoad, y: this.centerY - halfRoad };
-        } else if (from === 'east' && to === 'south') { // Right turn
-            return { x: this.centerX + halfRoad, y: this.centerY + halfRoad };
-        } else if (from === 'east' && to === 'north') { // Left turn
-            return { x: this.centerX + halfRoad, y: this.centerY - halfRoad };
-        } else if (from === 'south' && to === 'west') { // Right turn
-            return { x: this.centerX - halfRoad, y: this.centerY + halfRoad };
-        } else if (from === 'south' && to === 'east') { // Left turn
-            return { x: this.centerX + halfRoad, y: this.centerY + halfRoad };
-        } else if (from === 'west' && to === 'north') { // Right turn
-            return { x: this.centerX - halfRoad, y: this.centerY - halfRoad };
-        } else if (from === 'west' && to === 'south') { // Left turn
-            return { x: this.centerX - halfRoad, y: this.centerY + halfRoad };
+        // Position and movement
+        const spawnPoint = intersection.spawnPoints[direction];
+        this.x = spawnPoint.x;
+        this.y = spawnPoint.y;
+        this.angle = this.getInitialAngle();
+
+        // Properties
+        this.speed = 0;
+        this.maxSpeed = CONFIG.DEFAULT_SETTINGS?.CAR_SPEED || 80;
+        this.width = CONFIG.CAR_WIDTH;
+        this.height = CONFIG.CAR_HEIGHT;
+        this.color = CONFIG.CAR_COLORS[Math.floor(Math.random() * CONFIG.CAR_COLORS.length)];
+
+        // State
+        this.state = 'approaching';
+        this.waitStartTime = null;
+        this.totalWaitTime = 0;
+        this.isInIntersection = false;
+        this.pathProgress = 0;
+
+        // Trajectory path for turns
+        this.path = null;
+
+        // Assign trajectory if not straight
+        if (this.turnType !== 'straight') {
+            this.path = intersection.getTrajectory(this.fromDirection, this.toDirection);
+            this.pathProgress = 0;
         }
-        
-        // Default to intersection center
-        return { x: this.centerX, y: this.centerY };
     }
 
-    initialize() {
-        this.calculatePositions();
+    calculateTurnType() {
+        if (!this.route || !this.route.from || !this.route.to) return 'straight';
+        
+        const from = this.route.from;
+        const to = this.route.to;
+        const dirs = ['north', 'east', 'south', 'west'];
+        const fromIdx = dirs.indexOf(from);
+        const toIdx = dirs.indexOf(to);
+        
+        if (fromIdx === -1 || toIdx === -1) return 'straight';
+        
+        const diff = (toIdx - fromIdx + 4) % 4;
+        if (diff === 1) return 'right';
+        if (diff === 3) return 'left';
+        return 'straight';
     }
 
-    calculatePositions() {
-        const halfSize = this.size / 2;
-        const halfRoad = this.roadWidth / 2;
-        const laneOffset = this.laneWidth / 2;
-        
-        // Stop line positions (before intersection)
-       // Stop line positions (before intersection, always close to center)
-const stopLineOffset = halfSize + 5;
-this.stopLines = {
-    [CONFIG.DIRECTIONS.NORTH]: {
-        x1: this.centerX - halfRoad,
-        y1: this.centerY - stopLineOffset,
-        x2: this.centerX + halfRoad,
-        y2: this.centerY - stopLineOffset
-    },
-    [CONFIG.DIRECTIONS.EAST]: {
-        x1: this.centerX + stopLineOffset,
-        y1: this.centerY - halfRoad,
-        x2: this.centerX + stopLineOffset,
-        y2: this.centerY + halfRoad
-    },
-    [CONFIG.DIRECTIONS.SOUTH]: {
-        x1: this.centerX - halfRoad,
-        y1: this.centerY + stopLineOffset,
-        x2: this.centerX + halfRoad,
-        y2: this.centerY + stopLineOffset
-    },
-    [CONFIG.DIRECTIONS.WEST]: {
-        x1: this.centerX - stopLineOffset,
-        y1: this.centerY - halfRoad,
-        x2: this.centerX - stopLineOffset,
-        y2: this.centerY + halfRoad
+    prepareForTurn() {
+        // Tactical lane change before intersection
+        if (this.turnType === 'left') this.lane = 0;
+        else if (this.turnType === 'right') this.lane = 1;
+        // For straight, stay in current lane
     }
-};
-        // Traffic light positions
-        this.lightPositions = {
-            [CONFIG.DIRECTIONS.NORTH]: {
-                x: this.centerX - 25,
-                y: this.centerY - halfSize - 40
-            },
-            [CONFIG.DIRECTIONS.EAST]: {
-                x: this.centerX + halfSize + 15,
-                y: this.centerY - 25
-            },
-            [CONFIG.DIRECTIONS.SOUTH]: {
-                x: this.centerX + 25,
-                y: this.centerY + halfSize + 15
-            },
-            [CONFIG.DIRECTIONS.WEST]: {
-                x: this.centerX - halfSize - 40,
-                y: this.centerY + 25
+
+    updateApproaching(dt, lightStates) {
+        this.prepareForTurn();
+        // ...existing code...
+        // ...existing code...
+    }
+
+    updateCrossing(dt) {
+        // Accelerate through intersection
+        this.speed = Math.min(this.maxSpeed * 1.2, this.speed + 40 * dt);
+        if (this.path) {
+            // Move along trajectory path
+            this.pathProgress += this.speed * dt / this.path.length;
+            if (this.pathProgress >= 1) {
+                // Finished turn
+                this.path = null;
+                this.pathProgress = 0;
+                // Snap to exit lane centerline and resume straight movement
+                const exit = this.intersection.exitPoints[this.toDirection];
+                this.x = exit.x;
+                this.y = exit.y;
+                this.angle = this.getInitialAngle();
+            } else {
+                const idx = Math.floor(this.pathProgress * (this.path.length - 1));
+                const next = this.path[idx];
+                this.x = next.x;
+                this.y = next.y;
+                // Update heading
+                if (idx < this.path.length - 1) {
+                    const nextPt = this.path[idx + 1];
+                    this.angle = utils.getAngle(this.x, this.y, nextPt.x, nextPt.y);
+                }
             }
-        };
+        } else {
+            // Straight movement
+            this.x += Math.cos(this.angle) * this.speed * dt;
+            this.y += Math.sin(this.angle) * this.speed * dt;
+        }
+        // Check if we've exited the intersection
+        if (!this.isInIntersection && this.pathProgress > 0) {
+            this.state = 'exiting';
+        }
+        this.pathProgress += dt;
+    }
 
-        // Car spawn points
-        this.spawnPoints = {
-            [CONFIG.DIRECTIONS.NORTH]: {
-                x: this.centerX - laneOffset, // Right lane for cars going south
-                y: 0
-            },
-            [CONFIG.DIRECTIONS.EAST]: {
-                x: CONFIG.CANVAS_WIDTH,
-                y: this.centerY - laneOffset // Right lane for cars going west
-            },
-            [CONFIG.DIRECTIONS.SOUTH]: {
-                x: this.centerX + laneOffset, // Right lane for cars going north
-                y: CONFIG.CANVAS_HEIGHT
-            },
-            [CONFIG.DIRECTIONS.WEST]: {
-                x: 0,
-                y: this.centerY + laneOffset // Right lane for cars going east
-            }
-        };
+    followTurnTrajectory(dt) {
+        // Use Bezier curve for left/right turns
+        const entry = this.intersection.getPathEntryPoint(this.fromDirection);
+        const exit = this.intersection.exitPoints[this.toDirection];
+        // Control points for Bezier (simple: entry, control1, control2, exit)
+        let control1, control2;
+        if (this.turnType === 'left') {
+            control1 = { x: entry.x - 60, y: entry.y + 60 };
+            control2 = { x: exit.x - 60, y: exit.y - 60 };
+        } else {
+            control1 = { x: entry.x + 60, y: entry.y - 60 };
+            control2 = { x: exit.x + 60, y: exit.y + 60 };
+        }
+        const t = Math.min(this.pathProgress / 1.2, 1); // 1.2s for full turn
+        const pt = utils.getBezierPoint(t, entry, control1, control2, exit);
+        this.x = pt.x;
+        this.y = pt.y;
+        // Update heading
+        if (t < 1) {
+            const nextT = Math.min(t + 0.05, 1);
+            const nextPt = utils.getBezierPoint(nextT, entry, control1, control2, exit);
+            this.angle = utils.getAngle(this.x, this.y, nextPt.x, nextPt.y);
+        }
+    }
 
-        // Exit points - these are for straight-through traffic
-        this.exitPoints = {
-            [CONFIG.DIRECTIONS.NORTH]: {
-                x: this.centerX + laneOffset,
-                y: 0
-            },
-            [CONFIG.DIRECTIONS.EAST]: {
-                x: CONFIG.CANVAS_WIDTH,
-                y: this.centerY + laneOffset
-            },
-            [CONFIG.DIRECTIONS.SOUTH]: {
-                x: this.centerX - laneOffset,
-                y: CONFIG.CANVAS_HEIGHT
-            },
-            [CONFIG.DIRECTIONS.WEST]: {
-                x: 0,
-                y: this.centerY - laneOffset
+    // Example route assignment for spawning cars
+    // new Car({ id: 1, direction: 'north', intersection, route: {from: 'north', to: 'west'}, lane: 0, turnType: 'left' })
+    // new Car({ id: 2, direction: 'south', intersection, route: {from: 'south', to: 'east'}, lane: 1, turnType: 'right' })
+    // new Car({ id: 3, direction: 'east', intersection, route: {from: 'east', to: 'west'}, lane: 0, turnType: 'straight' })
+
+    getInitialAngle() {
+        switch (this.fromDirection) {
+            case CONFIG.DIRECTIONS.NORTH: return Math.PI / 2; // Facing south (down)
+            case CONFIG.DIRECTIONS.EAST: return Math.PI; // Facing west (left)
+            case CONFIG.DIRECTIONS.SOUTH: return -Math.PI / 2; // Facing north (up)
+            case CONFIG.DIRECTIONS.WEST: return 0; // Facing east (right)
+            default: return 0;
+        }
+    }
+calculateTargetPosition() {
+    // Make sure intersection and fromDirection are valid
+    if (this.intersection && typeof this.intersection.getExitPoint === 'function' && this.fromDirection) {
+        const target = this.intersection.getExitPoint(this.fromDirection);
+        if (!target || typeof target.x !== 'number' || typeof target.y !== 'number') {
+            console.warn("Target position is undefined or invalid for car", this.id);
+            return;
+        }
+        this.targetX = target.x;
+        this.targetY = target.y;
+    } else {
+        console.warn("intersection.getExitPoint is not a function or direction is missing");
+    }
+}
+
+    update(deltaTime, lightStates) {
+        const dt = deltaTime / 1000; // Convert to seconds
+
+        switch (this.state) {
+            case 'approaching':
+                this.updateApproaching(dt, lightStates);
+                break;
+            case 'waiting':
+                this.updateWaiting(dt, lightStates);
+                break;
+            case 'crossing':
+                this.updateCrossing(dt);
+                break;
+            case 'exiting':
+                this.updateExiting(dt);
+                break;
+        }
+
+        // Only update position for straight movement when not crossing or following a path
+        if (this.speed > 0 && this.state !== 'crossing') {
+            // Move based on the angle the car is facing
+            this.x += Math.cos(this.angle) * this.speed * dt;
+            this.y += Math.sin(this.angle) * this.speed * dt;
+        }
+
+        // Check if car is in intersection
+        this.isInIntersection = this.intersection.isInIntersection(this.x, this.y);
+    }
+
+    updateApproaching(dt, lightStates) {
+        const stopLine = this.intersection.getStopLinePosition(this.fromDirection);
+        const distanceToStop = this.getDistanceToStopLine(stopLine);
+        
+        // Check for cars ahead to maintain spacing
+        const carAhead = this.checkForCarAhead();
+        const shouldStop = carAhead && this.getDistanceToCarAhead(carAhead) < 35;
+        
+        if (distanceToStop <= 30 || shouldStop) {
+            // Close to stop line, check if we should stop
+            if (lightStates[this.fromDirection] === CONFIG.LIGHT_STATES.RED || shouldStop) {
+                this.state = 'waiting';
+                this.speed = 0;
+                if (!shouldStop) {
+                    this.waitStartTime = Date.now();
+                }
+                return;
             }
-        };
+        }
+        
+        // Continue approaching
+        this.speed = Math.min(this.maxSpeed, this.speed + 30 * dt); // Gradual acceleration
+        
+        // Check if we've reached the intersection
+        if (this.isInIntersection) {
+            this.state = 'crossing';
+        }
+    }
+
+    updateWaiting(dt, lightStates) {
+        this.speed = 0;
+        
+        if (this.waitStartTime) {
+            this.totalWaitTime = Date.now() - this.waitStartTime;
+        }
+        
+        // Check if light turned green
+        if (lightStates[this.fromDirection] === CONFIG.LIGHT_STATES.GREEN || 
+            lightStates[this.fromDirection] === CONFIG.LIGHT_STATES.YELLOW) {
+            this.state = 'crossing';
+            this.waitStartTime = null;
+        }
+    }
+
+    updateCrossing(dt) {
+        // Accelerate through intersection
+        this.speed = Math.min(this.maxSpeed * 1.2, this.speed + 40 * dt);
+        if (this.path) {
+            // Move along trajectory path
+            this.pathProgress += this.speed * dt / this.path.length;
+            if (this.pathProgress >= 1) {
+                // Finished turn
+                this.path = null;
+                this.pathProgress = 0;
+                // Snap to exit lane centerline and resume straight movement
+                const exit = this.intersection.exitPoints[this.toDirection];
+                this.x = exit.x;
+                this.y = exit.y;
+                this.angle = this.getInitialAngle();
+            } else {
+                const idx = Math.floor(this.pathProgress * (this.path.length - 1));
+                const next = this.path[idx];
+                this.x = next.x;
+                this.y = next.y;
+                // Update heading
+                if (idx < this.path.length - 1) {
+                    const nextPt = this.path[idx + 1];
+                    this.angle = utils.getAngle(this.x, this.y, nextPt.x, nextPt.y);
+                }
+            }
+        } else {
+            // Straight movement
+            this.x += Math.cos(this.angle) * this.speed * dt;
+            this.y += Math.sin(this.angle) * this.speed * dt;
+        }
+        // Check if we've exited the intersection
+        if (!this.isInIntersection && this.pathProgress > 0) {
+            this.state = 'exiting';
+        }
+        this.pathProgress += dt;
+    }
+
+    getTargetExitAngle() {
+        switch (this.toDirection) {
+            case CONFIG.DIRECTIONS.NORTH: return -Math.PI / 2; // Facing up
+            case CONFIG.DIRECTIONS.EAST: return 0; // Facing right
+            case CONFIG.DIRECTIONS.SOUTH: return Math.PI / 2; // Facing down
+            case CONFIG.DIRECTIONS.WEST: return Math.PI; // Facing left
+            default: return this.angle;
+        }
+    }
+
+    updateExiting(dt) {
+        // Assign lane after turn
+        if (this.turnType === 'left') this.lane = 0;
+        else if (this.turnType === 'right') this.lane = 1;
+        // For straight, keep lane
+        this.lateralPosition = 0; // Center in lane
+
+        // Update route to next segment (simulate route progression)
+        if (this.route && this.route.length > 1) {
+            this.route = this.route.slice(1);
+        }
+
+        // Continue moving at normal speed in the direction we're facing
+        this.speed = this.maxSpeed;
+
+        // Check if we've reached the edge of the canvas
+        let hasExited = false;
+
+        // Check if car has exited based on canvas boundaries
+        hasExited = this.x < -50 || this.x > CONFIG.CANVAS_WIDTH + 50 || 
+                   this.y < -50 || this.y > CONFIG.CANVAS_HEIGHT + 50;
+
+        if (hasExited) {
+            this.state = 'completed';
+        }
+    }
+
+    getDistanceToStopLine(stopLine) {
+        // Calculate distance from car to stop line
+        switch (this.fromDirection) {
+            case CONFIG.DIRECTIONS.NORTH:
+                return Math.abs(this.y - stopLine.y1);
+            case CONFIG.DIRECTIONS.EAST:
+                return Math.abs(this.x - stopLine.x1);
+            case CONFIG.DIRECTIONS.SOUTH:
+                return Math.abs(this.y - stopLine.y1);
+            case CONFIG.DIRECTIONS.WEST:
+                return Math.abs(this.x - stopLine.x1);
+            default:
+                return 0;
+        }
     }
 
     render(ctx) {
-        this.drawRoads(ctx);
-        this.drawIntersection(ctx);
-        this.drawLaneMarkings(ctx);
-        this.drawStopLines(ctx);
+        ctx.save();
+        // Move to car position and rotate
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle);
+        // Draw car body
+        ctx.fillStyle = this.color;
+        ctx.fillRect(-this.width / 2, -this.height / 2, this.width, this.height);
+        // Draw car details
+        ctx.fillStyle = '#333333';
+        ctx.fillRect(-this.width / 2 + 2, -this.height / 2 + 2, this.width - 4, 3); // Windshield
+        ctx.fillRect(-this.width / 2 + 2, this.height / 2 - 5, this.width - 4, 3); // Rear window
+        ctx.restore();
     }
 
-    drawRoads(ctx) {
-        const halfRoad = this.roadWidth / 2;
-        
-        ctx.fillStyle = '#444444';
-        
-        // Vertical road (North-South)
-        ctx.fillRect(
-            this.centerX - halfRoad,
-            0,
-            this.roadWidth,
-            CONFIG.CANVAS_HEIGHT
-        );
-        
-        // Horizontal road (East-West)
-        ctx.fillRect(
-            0,
-            this.centerY - halfRoad,
-            CONFIG.CANVAS_WIDTH,
-            this.roadWidth
-        );
+    // Getters for external systems
+    isWaiting() {
+        return this.state === 'waiting';
     }
 
-drawIntersection(ctx) {
-    const halfRoad = this.roadWidth / 2;
-    const curveRadius = halfRoad; // Makes the inward curve meet nicely
-
-    ctx.fillStyle = '#666666';
-    ctx.beginPath();
-
-    // Start top middle going clockwise
-    ctx.moveTo(this.centerX - halfRoad, this.centerY - halfRoad - curveRadius);
-
-    // Top left inward curve
-    ctx.quadraticCurveTo(
-        this.centerX - halfRoad, this.centerY - halfRoad,
-        this.centerX - halfRoad - curveRadius, this.centerY - halfRoad
-    );
-
-    // Left top to left bottom
-    ctx.lineTo(this.centerX - halfRoad - curveRadius, this.centerY + halfRoad);
-
-    // Bottom left inward curve
-    ctx.quadraticCurveTo(
-        this.centerX - halfRoad, this.centerY + halfRoad,
-        this.centerX - halfRoad, this.centerY + halfRoad + curveRadius
-    );
-
-    // Bottom middle to bottom right
-    ctx.lineTo(this.centerX + halfRoad, this.centerY + halfRoad + curveRadius);
-
-    // Bottom right inward curve
-    ctx.quadraticCurveTo(
-        this.centerX + halfRoad, this.centerY + halfRoad,
-        this.centerX + halfRoad + curveRadius, this.centerY + halfRoad
-    );
-
-    // Right bottom to right top
-    ctx.lineTo(this.centerX + halfRoad + curveRadius, this.centerY - halfRoad);
-
-    // Top right inward curve
-    ctx.quadraticCurveTo(
-        this.centerX + halfRoad, this.centerY - halfRoad,
-        this.centerX + halfRoad, this.centerY - halfRoad - curveRadius
-    );
-
-    // Back to start
-    ctx.closePath();
-    ctx.fill();
-
-    // Restore normal drawing mode for anything after
-    ctx.globalCompositeOperation = 'source-over';
-}
-
-    drawLaneMarkings(ctx) {
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([10, 10]);
-
-        const halfRoad = this.roadWidth / 2;
-        
-        // Vertical center line (North-South road)
-        ctx.beginPath();
-        ctx.moveTo(this.centerX, 0);
-        ctx.lineTo(this.centerX, this.centerY - halfRoad);
-        ctx.moveTo(this.centerX, this.centerY + halfRoad);
-        ctx.lineTo(this.centerX, CONFIG.CANVAS_HEIGHT);
-        ctx.stroke();
-        
-        // Horizontal center line (East-West road)
-        ctx.beginPath();
-        ctx.moveTo(0, this.centerY);
-        ctx.lineTo(this.centerX - halfRoad, this.centerY);
-        ctx.moveTo(this.centerX + halfRoad, this.centerY);
-        ctx.lineTo(CONFIG.CANVAS_WIDTH, this.centerY);
-        ctx.stroke();
-
-        ctx.setLineDash([]);
+    isCompleted() {
+        return this.state === 'completed';
     }
 
-    drawStopLines(ctx) {
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 4;
+    getWaitTime() {
+        return this.totalWaitTime;
+    }
+
+    getDirection() {
+        return this.fromDirection;
+    }
+
+    checkForCarAhead() {
+        // Get all cars from the car manager through intersection
+        const allCars = this.intersection.carManager ? this.intersection.carManager.getCars() : [];
         
-        Object.values(this.stopLines).forEach(line => {
-            ctx.beginPath();
-            ctx.moveTo(line.x1, line.y1);
-            ctx.lineTo(line.x2, line.y2);
-            ctx.stroke();
-        });
+        let closestCar = null;
+        let closestDistance = Infinity;
+        
+        for (const otherCar of allCars) {
+            if (otherCar.id === this.id || otherCar.fromDirection !== this.fromDirection) {
+                continue; // Skip self and cars from different directions
+            }
+            
+            // Check if the other car is ahead of this car
+            let isAhead = false;
+            let distance = 0;
+            
+            switch (this.fromDirection) {
+                case CONFIG.DIRECTIONS.NORTH:
+                    isAhead = otherCar.y > this.y;
+                    distance = otherCar.y - this.y;
+                    break;
+                case CONFIG.DIRECTIONS.EAST:
+                    isAhead = otherCar.x < this.x;
+                    distance = this.x - otherCar.x;
+                    break;
+                case CONFIG.DIRECTIONS.SOUTH:
+                    isAhead = otherCar.y < this.y;
+                    distance = this.y - otherCar.y;
+                    break;
+                case CONFIG.DIRECTIONS.WEST:
+                    isAhead = otherCar.x > this.x;
+                    distance = otherCar.x - this.x;
+                    break;
+            }
+            
+            if (isAhead && distance > 0 && distance < closestDistance) {
+                closestDistance = distance;
+                closestCar = otherCar;
+            }
+        }
+        
+        return closestCar;
     }
 
-    // Helper methods for car navigation
-    getStopLinePosition(direction) {
-        return this.stopLines[direction];
-    }
-
-    getSpawnPoint(direction) {
-        const offset = 300; // Adjust as needed for your canvas
-        switch (direction) {
-            case 'north': return { x: this.centerX, y: this.centerY - offset };
-            case 'south': return { x: this.centerX, y: this.centerY + offset };
-            case 'east':  return { x: this.centerX + offset, y: this.centerY };
-            case 'west':  return { x: this.centerX - offset, y: this.centerY };
-            default: return undefined;
+    getDistanceToCarAhead(carAhead) {
+        if (!carAhead) return Infinity;
+        
+        switch (this.fromDirection) {
+            case CONFIG.DIRECTIONS.NORTH:
+                return carAhead.y - this.y;
+            case CONFIG.DIRECTIONS.EAST:
+                return this.x - carAhead.x;
+            case CONFIG.DIRECTIONS.SOUTH:
+                return this.y - carAhead.y;
+            case CONFIG.DIRECTIONS.WEST:
+                return carAhead.x - this.x;
+            default:
+                return Infinity;
         }
     }
 
-    getExitPoint(direction) {
-        const offset = 300; // Adjust as needed for your canvas
-        switch (direction) {
-            case 'north': return { x: this.centerX, y: this.centerY - offset };
-            case 'south': return { x: this.centerX, y: this.centerY + offset };
-            case 'east':  return { x: this.centerX + offset, y: this.centerY };
-            case 'west':  return { x: this.centerX - offset, y: this.centerY };
-            default: return undefined;
-        }
-    }
-getLightPosition(direction) {
-    if (!direction || typeof direction !== 'string') {
-        console.warn("Invalid direction for getLightPosition:", direction);
-        return undefined;
-    }
-    return this.lightPositions[direction];
-}
-
-    // Check if a point is within the intersection
-    isInIntersection(x, y) {
-        const halfRoad = this.roadWidth / 2;
-        return (
-            x >= this.centerX - halfRoad &&
-            x <= this.centerX + halfRoad &&
-            y >= this.centerY - halfRoad &&
-            y <= this.centerY + halfRoad
-        );
-    }
-
-    // Get proper exit point based on turn type to ensure correct lane usage
     // ...existing code...
-    getProperExitPoint(fromDirection, toDirection, turnType) {
-        const laneOffset = this.laneWidth / 2;
+}
 
-        // Improved turn logic based on your description
-        // Removed turning logic
-        return this.exitPoints[toDirection];
+export class CarManager {
+    constructor(intersection) {
+        this.intersection = intersection;
+        this.cars = [];
+        this.nextCarId = 1;
+        this.spawnTimer = 0;
+        this.settings = { ...CONFIG.DEFAULT_SETTINGS };
+        
+        // Callbacks
+        this.onCarCompleted = null;
+        
+        // Set reference in intersection for car-to-car communication
+        this.intersection.carManager = this;
     }
 
-    // Get turning path for straight-line turns (no curves)
-    // Example: get path for left, right, straight
-    // intersection.getTrajectory('north', 'west') // left
-    // intersection.getTrajectory('south', 'east') // right
-        // intersection.getTrajectory('east', 'west') // straight
-    setCarManager(carManager) {
-        this.carManager = carManager;
+    initialize(settings) {
+        this.settings = { ...settings };
+        this.cars = [];
+        this.nextCarId = 1;
+        this.spawnTimer = 0;
+    }
+
+    update(deltaTime, lightStates) {
+        // Update spawn timer
+        this.spawnTimer += deltaTime;
+        
+        // Spawn new cars
+        const spawnInterval = (10000 / this.settings.CAR_SPAWN_RATE); // Convert rate to interval
+        if (this.spawnTimer >= spawnInterval) {
+            this.spawnCar();
+            this.spawnTimer = 0;
+        }
+
+        // Update existing cars
+        this.cars.forEach(car => {
+            car.maxSpeed = this.settings.CAR_SPEED;
+            car.update(deltaTime, lightStates);
+        });
+
+        // Remove completed cars
+        const completedCars = this.cars.filter(car => car.isCompleted());
+        completedCars.forEach(car => {
+            if (this.onCarCompleted) {
+                this.onCarCompleted(car);
+            }
+        });
+
+        this.cars = this.cars.filter(car => !car.isCompleted());
+    }
+
+    spawnCar() {
+        // Randomly choose a direction to spawn from
+        const directions = [CONFIG.DIRECTIONS.NORTH, CONFIG.DIRECTIONS.EAST, CONFIG.DIRECTIONS.SOUTH, CONFIG.DIRECTIONS.WEST];
+        const direction = directions[Math.floor(Math.random() * directions.length)];
+        
+        // Check if there's space to spawn (no car too close to spawn point)
+        const spawnPoint = this.intersection.spawnPoints[direction];
+        const tooClose = this.cars.some(car => {
+            const distance = utils.getDistance(car.x, car.y, spawnPoint.x, spawnPoint.y);
+            return car.fromDirection === direction && distance < 60;
+        });
+
+        if (!tooClose) {
+            // Randomly choose a turn type
+            const turnTypes = ['straight', 'left', 'right'];
+            const turnType = turnTypes[Math.floor(Math.random() * turnTypes.length)];
+            
+            // Calculate destination direction based on turn type
+            const dirs = ['north', 'east', 'south', 'west'];
+            const fromIdx = dirs.indexOf(direction);
+            let toDirection;
+            
+            switch (turnType) {
+                case 'straight':
+                    toDirection = dirs[(fromIdx + 2) % 4];
+                    break;
+                case 'right':
+                    toDirection = dirs[(fromIdx + 1) % 4];
+                    break;
+                case 'left':
+                    toDirection = dirs[(fromIdx + 3) % 4];
+                    break;
+            }
+            
+            const car = new Car({
+                id: this.nextCarId++,
+                direction: direction,
+                intersection: this.intersection,
+                route: { from: direction, to: toDirection },
+                turnType: turnType
+            });
+            this.cars.push(car);
+        }
+    }
+
+    render(ctx) {
+        this.cars.forEach(car => car.render(ctx));
+    }
+
+    reset() {
+        this.cars = [];
+        this.nextCarId = 1;
+        this.spawnTimer = 0;
+    }
+
+    updateSettings(settings) {
+        this.settings = { ...settings };
+    }
+
+    // Getters for external systems
+    getCars() {
+        return [...this.cars];
+    }
+
+    getWaitingCars(direction) {
+        return this.cars.filter(car => car.getDirection() === direction && car.isWaiting());
+    }
+
+    getCurrentCarCount() {
+        return this.cars.length;
     }
 }
